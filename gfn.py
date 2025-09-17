@@ -55,8 +55,9 @@ input_dim = 1
 n_units = 32
 output_dim = n_states + 1
 policy = torch.nn.Sequential(
+    torch.nn.Embedding(n_states, n_states),
     torch.nn.Linear(
-        input_dim,
+        n_states,
         n_units,
         dtype=float_type,
         device=device,
@@ -72,8 +73,8 @@ policy = torch.nn.Sequential(
 
 ### OPTIMIZER ###
 
-n_train_steps = 10000
-learning_rate = 1e-4
+n_train_steps = 2000
+learning_rate = 0.01
 momentum = 0.9
 optimizer = torch.optim.SGD(policy.parameters(), lr=learning_rate, momentum=momentum)
 
@@ -112,9 +113,7 @@ for step in range(n_train_steps):
         # Obtain policy log-flows from the current state, mask invalid actions and
         # sample action
         with torch.no_grad():
-            logits_sampled = policy(
-                torch.tensor([state], dtype=float_type, device=device)
-            )
+            logits_sampled = policy(torch.tensor(state, dtype=torch.int, device=device))
         logits_sampled[mask_invalid] = -torch.inf
         action = Categorical(logits=logits_sampled).sample()
         n_steps += 1
@@ -135,11 +134,15 @@ for step in range(n_train_steps):
         # - Get parents of state
         # - Obtain log-flows from each parent to state
         # - Take the log of the sum of the exponential log-flows
+        if traj_done:
+            parents = [state]
+        else:
+            parents = [s for s in range(n_states) if state in connections_dict[s]]
         parents = torch.tensor(
-            [s for s in range(n_states) if state in connections_dict[s]],
-            dtype=float_type,
+            parents,
+            dtype=torch.int,
             device=device,
-        ).unsqueeze(-1)
+        )
         inflow_logits = policy(parents)[:, action]
         loginflow = torch.logsumexp(inflow_logits, dim=0)
 
@@ -157,11 +160,8 @@ for step in range(n_train_steps):
             children = torch.tensor(
                 [s for s in connections_dict[state]], dtype=torch.int, device=device
             )
-            outflow_logits = torch.full(
-                (output_dim,), -torch.inf, dtype=float_type, device=device
-            )
-            outflow_logits[children] = policy(
-                (torch.tensor([state], dtype=float_type, device=device))
+            outflow_logits = policy(
+                (torch.tensor(state, dtype=torch.int, device=device))
             )[children]
             logoutflow = torch.logsumexp(outflow_logits, dim=0)
 
@@ -213,9 +213,7 @@ for step in range(n_samples):
         # Obtain policy log-flows from the current state, mask invalid actions and
         # sample action
         with torch.no_grad():
-            logits_sampled = policy(
-                torch.tensor([state], dtype=float_type, device=device)
-            )
+            logits_sampled = policy(torch.tensor(state, dtype=torch.int, device=device))
         logits_sampled[mask_invalid] = -torch.inf
         action = Categorical(logits=logits_sampled).sample()
 
