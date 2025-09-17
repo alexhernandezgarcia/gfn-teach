@@ -48,24 +48,14 @@ n_states = len(connections_dict)
 
 ### POLICY MODEL ###
 
-# MLP with one hidden layer and ReLU activations. The inputs are 1D and the outputs are
-# tensors with dimensionality equal to the number of actions: the number of states plus
-# one, for the end-of-sequence (EOS) action
-input_dim = 1
-n_units = 32
-output_dim = n_states + 1
+# Linear layer following an embedding layer. The inputs are the state indices and the
+# outputs are tensors with dimensionality equal to the number of actions: the number of
+# states plus one, for the end-of-sequence (EOS) action.
 policy = torch.nn.Sequential(
     torch.nn.Embedding(n_states, n_states),
     torch.nn.Linear(
         n_states,
-        n_units,
-        dtype=float_type,
-        device=device,
-    ),
-    torch.nn.ReLU(),
-    torch.nn.Linear(
-        n_units,
-        output_dim,
+        n_states + 1,
         dtype=float_type,
         device=device,
     ),
