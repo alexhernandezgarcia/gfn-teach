@@ -68,13 +68,12 @@ policy = torch.nn.Sequential(
         dtype=float_type,
         device=device,
     ),
-    torch.nn.ReLU(),
 )
 
 ### OPTIMIZER ###
 
 n_train_steps = 10000
-learning_rate = 1e-2
+learning_rate = 1e-4
 momentum = 0.9
 optimizer = torch.optim.SGD(policy.parameters(), lr=learning_rate, momentum=momentum)
 
@@ -92,6 +91,7 @@ for step in range(n_train_steps):
     # Initialize a trajectory with state 0 and trajectory not done
     state = 0
     traj_done = False
+    n_steps = 0
 
     # Initialize loss to zero
     loss = torch.tensor([0.0], dtype=float_type, device=device)
@@ -117,6 +117,7 @@ for step in range(n_train_steps):
             )
         logits_sampled[mask_invalid] = -torch.inf
         action = Categorical(logits=logits_sampled).sample()
+        n_steps += 1
 
         # Update state, flag of done trajectory and get reward
         if action == n_states:
@@ -168,6 +169,7 @@ for step in range(n_train_steps):
         loss = loss + (loginflow - logoutflow).pow(2)
 
     # End of the trajectory: Back propagate and update parameters
+    loss /= n_steps
     loss.backward()
     optimizer.step()
     optimizer.zero_grad()
@@ -181,7 +183,7 @@ for step in range(n_train_steps):
 
 ### EVALUATE ###
 
-n_samples = 1000
+n_samples = 2000
 
 # A dictionary to count the number of times each terminal state is sampled
 samples_dict = {
