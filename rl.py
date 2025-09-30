@@ -1,0 +1,217 @@
+"""
+This script trains a minimal policy gradient agent on the "Toy environment", which is the
+defined in Figure 2 of the GFlowNet Foundations paper, Bengio et al (JMLR, 2023):
+
+.. _a link: https://jmlr.org/papers/v24/22-0364.html
+"""
+
+"""
+Key differences with gfn.py:
+- Uses policy gradient instead of GFlowNet training
+- Batches of episodes instead of single episodes to reduce variance
+"""
+
+import torch
+from torch.distributions import Categorical
+from tqdm import tqdm
+import time
+
+
+### COMMON VARIABLES ###
+
+float_type = torch.float32
+device = torch.device("cpu")
+do_print = True
+
+### ENVIRONMENT ###
+
+discount_factor = 1.0 # No discounting
+batch_size = 32
+
+# A dictionary of connections: the keys of the dictionary are the indices of the
+# states, and the values are the indices of the states to which each state is
+# connected.
+connections_dict = {
+    0: (1, 2),
+    1: (3,),
+    2: (3, 4),
+    3: (5, -1),
+    4: (6, -1),
+    5: (7, 8),
+    6: (8, 10, -1),
+    7: (9,),
+    8: (9, -1),
+    9: (-1,),
+    10: (-1,),
+}
+# A dictionary of rewards: the keys of the dictionary are the indices of the
+# states, and the values are their rewards.
+rewards_dict = {
+    3: 30,
+    4: 14,
+    6: 23,
+    8: 10,
+    9: 30,
+    10: 5,
+}
+n_states = len(connections_dict)
+
+### POLICY MODEL ###
+
+# Linear layer following an embedding layer. The inputs are the state indices and the
+# outputs are tensors with dimensionality equal to the number of actions: the number of
+# states plus one, for the end-of-sequence (EOS) action.
+class Policy(torch.nn.Module):
+    def __init__(self, n_states, float_type, device):
+        super(Policy, self).__init__()
+        self.embedding = torch.nn.Embedding(n_states, n_states)
+        self.linear = torch.nn.Linear(n_states, n_states + 1, dtype=float_type, device=device)
+
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.linear(x)
+        return x
+
+policy = Policy(n_states, float_type, device)
+
+### OPTIMIZER ###
+
+n_train_steps = 2000
+learning_rate = 0.01
+optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate)
+
+### LOSS FUNCTION ###
+
+class PolicyGradientLoss(torch.nn.Module):
+    def __init__(self, gamma=1.0):
+        super(PolicyGradientLoss, self).__init__()
+        self.gamma = gamma
+
+    #J(θ) = E[∑_t R_t ∇ log π(a_t | s_t; θ)] without any baseline
+    def forward(self, log_probs, returns):    
+        discounted_returns = []
+        for t in range(len(returns)):
+            G = 0
+            for k in range(t, len(returns)):
+                G += (self.gamma ** (k - t)) * returns[k]
+            discounted_returns.append(G)
+        discounted_returns = torch.tensor(discounted_returns, dtype=float_type, device=device)
+
+        loss = - (log_probs * discounted_returns).sum()
+        return loss
+
+### GRAPH MASKS ###
+
+mask_dict = {}
+for state in range(n_states):
+    mask_invalid = [False if s in connections_dict[state] else True for s in range(n_states)]
+    mask_invalid += [-1 not in connections_dict[state]]
+    mask_dict[state] = mask_invalid
+
+### TRAIN ###
+
+pg_loss = PolicyGradientLoss()
+
+if not do_print:
+    pbar = tqdm(
+        initial=0,
+        total=n_train_steps // batch_size,
+    )
+
+start_time = time.time()
+
+for step in range(n_train_steps // batch_size):
+    
+    trajectories = []
+    
+    for _ in range(batch_size):
+        traj = {'states': [], 'actions': [], 'log_prob': [], 'rewards': []}
+        
+        state = 0
+        traj_done = False
+        
+        if do_print:
+            print(f"\nIteration {step}")
+            print(f"\tTrajectory 0 -> ", end="")
+        
+        while not traj_done:
+            
+            mask_invalid = mask_dict[state]
+            
+            #with torch.no_grad(): # Commented out to keep gradients for policy gradient
+            logits = policy(torch.tensor([state], device=device, dtype=torch.long))
+            logits[0, mask_invalid] = -torch.inf
+            action_dist = Categorical(logits=logits.squeeze())
+            action = action_dist.sample()
+            log_prob = action_dist.log_prob(action)
+
+            traj['states'].append(state)
+            traj['actions'].append(action)
+            traj['log_prob'].append(log_prob)
+            
+            if action == n_states:
+                traj_done = True
+                reward = rewards_dict.get(state, 0)
+                if do_print:
+                    print(f"DONE! Reward: {reward}")
+            else:
+                state = action.item()
+                reward = 0
+                if do_print:
+                    print(f"{state} -> ", end="")
+            
+            traj['rewards'].append(reward)
+        
+        trajectories.append(traj)
+    
+    # Compute loss for the batch
+    total_loss = 0
+    for traj in trajectories:
+        log_probs = torch.stack(traj['log_prob'])
+        rewards = traj['rewards']
+        loss = pg_loss(log_probs, rewards)
+        total_loss += loss
+    loss = total_loss / batch_size
+    
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    
+    loss_print = loss.item()
+    if do_print:
+        print("Loss: {:.4f}".format(loss_print))
+    else:
+        pbar.update(1)
+        pbar.set_description("Loss: {:.4f}".format(loss_print))
+
+end_time = time.time()
+print(f"Training time: {end_time - start_time:.2f}s")
+
+### EVALUATION ###
+
+# Sample trajectories to compute probabilities
+n_eval_samples = 10000
+samples_dict = {state: 0 for state in rewards_dict}
+true_probs = {state: reward / sum(rewards_dict.values()) for state, reward in rewards_dict.items()}
+
+for _ in range(n_eval_samples):
+    state = 0
+    traj_done = False
+    while not traj_done:
+        mask_invalid = mask_dict[state]
+        with torch.no_grad():
+            logits = policy(torch.tensor([state], device=device, dtype=torch.long))
+        logits[0, mask_invalid] = -torch.inf
+        action_dist = Categorical(logits=logits.squeeze())
+        action = action_dist.sample()
+        
+        if action == n_states:
+            traj_done = True
+            samples_dict[state] += 1
+        else:
+            state = action.item()
+
+# Compute sampled probabilities and MAE
+sampled_probs = {state: count / n_eval_samples for state, count in samples_dict.items()}
+mae = sum(abs(sampled_probs[state] - true_probs[state]) for state in true_probs) / len(true_probs)
+print(f"MAE: {mae:.4f}")
