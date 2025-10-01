@@ -26,7 +26,7 @@ do_print = True
 ### ENVIRONMENT ###
 
 discount_factor = 1.0 # No discounting
-batch_size = 32
+batch_size = 1
 
 # A dictionary of connections: the keys of the dictionary are the indices of the
 # states, and the values are the indices of the states to which each state is
@@ -78,7 +78,8 @@ policy = Policy(n_states, float_type, device)
 
 n_train_steps = 2000
 learning_rate = 0.01
-optimizer = torch.optim.Adam(policy.parameters(), lr=learning_rate)
+momentum = 0.9
+optimizer = torch.optim.SGD(policy.parameters(), lr=learning_rate, momentum=momentum)
 
 ### LOSS FUNCTION ###
 
