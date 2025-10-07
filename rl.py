@@ -21,12 +21,11 @@ import time
 
 float_type = torch.float32
 device = torch.device("cpu")
-do_print = True
+do_print = False
 
 ### ENVIRONMENT ###
 
 discount_factor = 1.0 # No discounting
-batch_size = 1
 
 # A dictionary of connections: the keys of the dictionary are the indices of the
 # states, and the values are the indices of the states to which each state is
@@ -88,16 +87,11 @@ class PolicyGradientLoss(torch.nn.Module):
         super(PolicyGradientLoss, self).__init__()
         self.gamma = gamma
 
-    #J(θ) = E[∑_t R_t ∇ log π(a_t | s_t; θ)] without any baseline
-    def forward(self, log_probs, returns):    
-        discounted_returns = []
-        for t in range(len(returns)):
-            G = 0
-            for k in range(t, len(returns)):
-                G += (self.gamma ** (k - t)) * returns[k]
-            discounted_returns.append(G)
-        discounted_returns = torch.tensor(discounted_returns, dtype=float_type, device=device)
-
+    def forward(self, log_probs, returns):
+        returns = torch.tensor(returns, dtype=float_type, device=device)
+        # Why double flip: flip returns (e.g., [r0, r1, r2] -> [r2, r1, r0]), cumsum (prefix sums: [r2, r2+r1, r2+r1+r0]), flip back ([r2+r1+r0, r2+r1, r2])
+        discounted_returns = torch.cumsum(returns.flip(0), dim=0).flip(0) 
+        # Policy gradient loss: L(θ) = - J(θ), where J(θ) = sum over t log π_θ(a_t|s_t) * G_t (Advantage functions becomes the undiscounted cumulative reward since gamma=1.0 and there is no baseline)
         loss = - (log_probs * discounted_returns).sum()
         return loss
 
@@ -116,63 +110,57 @@ pg_loss = PolicyGradientLoss()
 if not do_print:
     pbar = tqdm(
         initial=0,
-        total=n_train_steps // batch_size,
+        total=n_train_steps,
     )
 
 start_time = time.time()
 
-for step in range(n_train_steps // batch_size):
+for step in range(n_train_steps):
     
-    trajectories = []
+    traj = {'states': [], 'actions': [], 'log_prob': [], 'rewards': []}
     
-    for _ in range(batch_size):
-        traj = {'states': [], 'actions': [], 'log_prob': [], 'rewards': []}
+    state = 0
+    traj_done = False
+    
+    if do_print:
+        print(f"\nIteration {step}")
+        print(f"\tTrajectory 0 -> ", end="")
+    
+    while not traj_done:
         
-        state = 0
-        traj_done = False
+        mask_invalid = mask_dict[state]
         
-        if do_print:
-            print(f"\nIteration {step}")
-            print(f"\tTrajectory 0 -> ", end="")
-        
-        while not traj_done:
-            
-            mask_invalid = mask_dict[state]
-            
-            #with torch.no_grad(): # Commented out to keep gradients for policy gradient
-            logits = policy(torch.tensor([state], device=device, dtype=torch.long))
-            logits[0, mask_invalid] = -torch.inf
-            action_dist = Categorical(logits=logits.squeeze())
-            action = action_dist.sample()
-            log_prob = action_dist.log_prob(action)
+        #with torch.no_grad(): # Commented out to keep gradients for policy gradient
+        logits = policy(torch.tensor([state], device=device, dtype=torch.long))
+        logits[0, mask_invalid] = -torch.inf
+        action_dist = Categorical(logits=logits.squeeze())
+        action = action_dist.sample()
+        log_prob = action_dist.log_prob(action)
 
-            traj['states'].append(state)
-            traj['actions'].append(action)
-            traj['log_prob'].append(log_prob)
-            
-            if action == n_states:
-                traj_done = True
-                reward = rewards_dict.get(state, 0)
-                if do_print:
-                    print(f"DONE! Reward: {reward}")
-            else:
-                state = action.item()
-                reward = 0
-                if do_print:
-                    print(f"{state} -> ", end="")
-            
-            traj['rewards'].append(reward)
+        traj['states'].append(state)
+        traj['actions'].append(action)
+        traj['log_prob'].append(log_prob)
         
-        trajectories.append(traj)
+        if action == n_states:
+            traj_done = True
+            reward = rewards_dict.get(state, 0)
+            if do_print:
+                print(f"DONE! Reward: {reward}")
+        else:
+            state = action.item()
+            reward = 0
+            if do_print:
+                print(f"{state} -> ", end="")
+        
+        traj['rewards'].append(reward)
+        
+    # Compute policy gradient loss and backpropagate
+    log_probs = torch.stack(traj['log_prob'])
+    rewards = traj['rewards']
+    loss = pg_loss(log_probs, rewards)
     
-    # Compute loss for the batch
-    total_loss = 0
-    for traj in trajectories:
-        log_probs = torch.stack(traj['log_prob'])
-        rewards = traj['rewards']
-        loss = pg_loss(log_probs, rewards)
-        total_loss += loss
-    loss = total_loss / batch_size
+    # Average loss by trajectory length (to match gfn.py)
+    loss = loss / len(log_probs)
     
     loss.backward()
     optimizer.step()
@@ -190,12 +178,19 @@ print(f"Training time: {end_time - start_time:.2f}s")
 
 ### EVALUATION ###
 
-# Sample trajectories to compute probabilities
-n_eval_samples = 10000
-samples_dict = {state: 0 for state in rewards_dict}
-true_probs = {state: reward / sum(rewards_dict.values()) for state, reward in rewards_dict.items()}
+n_samples = 2000
 
-for _ in range(n_eval_samples):
+# A dictionary to count the number of times each terminal state is sampled
+samples_dict = {
+    3: 0,
+    4: 0,
+    6: 0,
+    8: 0,
+    9: 0,
+    10: 0,
+}
+
+for _ in range(n_samples):
     state = 0
     traj_done = False
     while not traj_done:
@@ -212,7 +207,17 @@ for _ in range(n_eval_samples):
         else:
             state = action.item()
 
-# Compute sampled probabilities and MAE
-sampled_probs = {state: count / n_eval_samples for state, count in samples_dict.items()}
-mae = sum(abs(sampled_probs[state] - true_probs[state]) for state in true_probs) / len(true_probs)
-print(f"MAE: {mae:.4f}")
+# Print results
+print("\nEvaluation: \n")
+z = sum(rewards_dict.values())
+absolute_error = 0.0
+for sample, count in samples_dict.items():
+    p_sampled = count / n_samples
+    p_true = rewards_dict[sample] / z
+    absolute_error += abs(p_sampled - p_true)
+    print(
+        "- Sample {:2d} was generated with probability {:.2f} and the "
+        "actual probability is {:.2f}".format(sample, p_sampled, p_true)
+    )
+mae = absolute_error / len(samples_dict)
+print("Mean absolute error: {:.2f}".format(mae))
