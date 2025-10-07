@@ -1,5 +1,5 @@
 """
-This script trains a minimal policy gradient agent on the "Toy environment", which is the
+This script trains a minimal REINFORCE agent on the "Toy environment", which is the
 defined in Figure 2 of the GFlowNet Foundations paper, Bengio et al (JMLR, 2023):
 
 .. _a link: https://jmlr.org/papers/v24/22-0364.html
@@ -7,7 +7,7 @@ defined in Figure 2 of the GFlowNet Foundations paper, Bengio et al (JMLR, 2023)
 
 """
 Key differences with gfn.py:
-- Uses policy gradient instead of GFlowNet training
+- Uses REINFORCE framework instead of GFlowNet training
 - Batches of episodes instead of single episodes to reduce variance
 """
 
@@ -82,16 +82,16 @@ optimizer = torch.optim.SGD(policy.parameters(), lr=learning_rate, momentum=mome
 
 ### LOSS FUNCTION ###
 
-class PolicyGradientLoss(torch.nn.Module):
+class ReinforceLoss(torch.nn.Module):
     def __init__(self, gamma=1.0):
-        super(PolicyGradientLoss, self).__init__()
+        super(ReinforceLoss, self).__init__()
         self.gamma = gamma
 
     def forward(self, log_probs, returns):
         returns = torch.tensor(returns, dtype=float_type, device=device)
         # Why double flip: flip returns (e.g., [r0, r1, r2] -> [r2, r1, r0]), cumsum (prefix sums: [r2, r2+r1, r2+r1+r0]), flip back ([r2+r1+r0, r2+r1, r2])
         discounted_returns = torch.cumsum(returns.flip(0), dim=0).flip(0) 
-        # Policy gradient loss: L(θ) = - J(θ), where J(θ) = sum over t log π_θ(a_t|s_t) * G_t (Advantage functions becomes the undiscounted cumulative reward since gamma=1.0 and there is no baseline)
+        # REINFORCE Loss function: L(θ) = - J(θ), where J(θ) = sum over t log π_θ(a_t|s_t) * G_t (Advantage functions becomes the undiscounted cumulative reward since gamma=1.0 and there is no baseline)
         loss = - (log_probs * discounted_returns).sum()
         return loss
 
@@ -105,7 +105,7 @@ for state in range(n_states):
 
 ### TRAIN ###
 
-pg_loss = PolicyGradientLoss()
+pg_loss = ReinforceLoss()
 
 if not do_print:
     pbar = tqdm(
@@ -130,7 +130,7 @@ for step in range(n_train_steps):
         
         mask_invalid = mask_dict[state]
         
-        #with torch.no_grad(): # Commented out to keep gradients for policy gradient
+        #with torch.no_grad(): # Commented out to keep gradients for log policy probability
         logits = policy(torch.tensor([state], device=device, dtype=torch.long))
         logits[0, mask_invalid] = -torch.inf
         action_dist = Categorical(logits=logits.squeeze())
@@ -153,8 +153,8 @@ for step in range(n_train_steps):
                 print(f"{state} -> ", end="")
         
         traj['rewards'].append(reward)
-        
-    # Compute policy gradient loss and backpropagate
+
+    # Compute REINFORCE loss and backpropagate
     log_probs = torch.stack(traj['log_prob'])
     rewards = traj['rewards']
     loss = pg_loss(log_probs, rewards)
