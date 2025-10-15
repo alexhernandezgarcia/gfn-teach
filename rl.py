@@ -8,7 +8,6 @@ defined in Figure 2 of the GFlowNet Foundations paper, Bengio et al (JMLR, 2023)
 """
 Key differences with gfn.py:
 - Uses REINFORCE framework instead of GFlowNet training
-- Batches of episodes instead of single episodes to reduce variance
 """
 
 import torch
