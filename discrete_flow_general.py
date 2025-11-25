@@ -28,7 +28,7 @@ NOISE_TYPE = 'uniform'
 
 float_type = torch.float32
 device = torch.device("cpu")
-do_print = True
+do_print = False
 
 ### ENVIRONMENT ###
 
